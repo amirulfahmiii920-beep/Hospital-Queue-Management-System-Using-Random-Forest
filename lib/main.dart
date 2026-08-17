@@ -6464,8 +6464,7 @@ class _StaffHomeScreenState extends State<StaffHomeScreen> {
 
         // 2. CALL AI SERVER TO GET ESTIMATED CONSULTATION WAIT TIME
         int baseConsultWaitTime = 20; // Default fallback if AI fails
-        final String aiConsultUrl =
-            'https://qhealth-ai-server.onrender.com/predict_consult_ewt';
+        final String aiConsultUrl = dotenv.env['AI_SERVER_URL'] ?? '';
         try {
           DateTime now = DateTime.now();
           double exactHour = now.hour + (now.minute / 100.0);
