@@ -235,24 +235,35 @@ the two stages.
 
 ### Server and model tests (re-run October 2026)
 
-The AI server was run locally from [qhealth-ai-server](https://github.com/amirulfahmiii920-beep/qhealth-ai-server)
-(Flask test client, scikit-learn 1.9.1) and sent the exact JSON the app sends. The saved models
-were also called directly with the inputs they were trained on.
+The AI server from [qhealth-ai-server](https://github.com/amirulfahmiii920-beep/qhealth-ai-server)
+was run locally (Flask test client, scikit-learn 1.9.1) and sent the exact JSON the app sends. The
+saved models were also called directly with the inputs they were trained on. The first run found
+three bugs in the hand-off between the app, the server and the models, all hidden by the app's
+fallback estimate (which is why UAT-04 still passed). They were fixed in
+[commit 14857b2](https://github.com/amirulfahmiii920-beep/qhealth-ai-server/commit/14857b2) and the
+same tests were run again.
 
-| ID | Test | Input | Expected | Actual | Result |
+| ID | Test | Input | Expected | First run | After fix |
 |---|---|---|---|---|---|
-| SV-01 | Health check | `GET /` | 200 and a status line | 200, "running with Dual Models" | Pass |
-| SV-02 | Screening estimate, app payload | Monday 10:18, `Patient Type: 1` | 200 with minutes | 500, `columns are missing: {'Financial Class'}` | Fail |
-| SV-03 | Screening estimate on a Sunday | `Entry_Day: 0` | 200 with minutes | 500, same error as SV-02 | Fail |
-| SV-04 | Screening estimate, empty body | `{}` | Defaults used, 200 | 500, same error as SV-02 | Fail |
-| SV-05 | Doctor estimate, app payload | `Entry_Hour: 10.18`, queue length 3 | 200 with minutes | 500, `Patient Type` sent as `1`, model expects `OUTPATIENT` | Fail |
-| SV-06 | Doctor estimate, empty body | `{}` | Defaults used, 200 | 500, same error as SV-05 | Fail |
-| ML-01 | Screening model, every clinic hour (8 am to 4 pm), day and financial class | 315 rows, correct inputs | Minutes, no errors | 0.0 to 38.9 min | Pass |
-| ML-02 | Doctor model, every clinic hour, day and doctor type | 189 rows, correct inputs | Minutes, no errors | 0.0 to 120.9 min | Pass |
-| ML-03 | Time format the app sends | 10:30 sent as `10.3`, 10:59 as `10.59` | Both treated as the 10 am hour | 10:30 gives 10.1 min, 10:59 gives 8.5 min (the 11 am value) | Fail |
+| SV-01 | Health check | `GET /` | 200 and a status line | Pass | Pass |
+| SV-02 | Screening estimate, app payload | Monday 10:18, `Patient Type: 1` | 200 with minutes | Fail: 500, `columns are missing: {'Financial Class'}` | Pass: 12 min |
+| SV-03 | Screening estimate on a Sunday | `Entry_Day: 0` | 200 with minutes | Fail: same error as SV-02 | Pass: 6 min |
+| SV-04 | Screening estimate, empty body | `{}` | Defaults used, 200 | Fail: same error as SV-02 | Pass: 9 min |
+| SV-05 | Doctor estimate, app payload | `Entry_Hour: 10.18`, queue length 3 | 200 with minutes | Fail: 500, `Patient Type` sent as `1`, model expects `OUTPATIENT` | Pass: 23 min |
+| SV-06 | Doctor estimate, empty body | `{}` | Defaults used, 200 | Fail: same error as SV-05 | Pass: 8 min |
+| ML-01 | Screening model, every clinic hour (8 am to 4 pm), day and financial class | 315 rows, correct inputs | Minutes, no errors | Pass: 0.0 to 38.9 min | Pass |
+| ML-02 | Doctor model, every clinic hour, day and doctor type | 189 rows, correct inputs | Minutes, no errors | Pass: 0.0 to 120.9 min | Pass |
+| ML-03 | Time format the app sends | 10:30 sent as `10.3`, 10:59 as `10.59` | Both treated as the 10 am hour | Fail: 10:59 got the 11 am estimate | Pass: 10:00, 10:30 and 10:59 all give 12 min |
 
-The models themselves work. The failures are all in the hand-off between the app, the server and
-the models, which is exactly what UAT-04 could not see because of the fallback.
+What the fix changed in `app.py`:
+
+1. `Patient Type` is sent to both models as `OUTPATIENT`, the label they were trained on.
+2. The screening model gets the `Financial Class` column it needs. The app does not know a
+   patient's financial class, so the server averages the estimate over all five classes.
+3. Only the whole hour is passed to the models, so the app's `hour + minute / 100` format no
+   longer pushes late-hour visits into the next hour.
+
+The fix is on the server only, so the app works with it without a new build.
 
 ### Problems hit during development
 
@@ -262,23 +273,17 @@ These each left a trace in the code or the commit history:
 |---|---|---|
 | Wrong day on the server | The AI server on Render runs on UTC, so before 8 am Malaysia time it still read the previous day | Shift the server clock to UTC+8 before reading the day (comment "FIX ZON MASA MALAYSIA" in `app.py`) |
 | Queue numbers outside clinic hours | The phone clock can be changed by the user | Read the time from a time service in `Asia/Kuala_Lumpur` instead of the phone, and refuse a number if it cannot be reached (tested as UAT-03) |
-| Model input format | The models were trained on text labels, while the app sends numbers | A conversion was attempted in `app.py` ("TUKAR 'OUTPATIENT' KEPADA NOMBOR 1"), but it maps the wrong way round, so it is still open (SV-05) |
+| Model input format | The models were trained on text labels, while the app sends numbers | A conversion was attempted in `app.py` ("TUKAR 'OUTPATIENT' KEPADA NOMBOR 1") but mapped the wrong way round. Found by SV-05 and fixed in October 2026 |
 | Server address hard-coded | The doctor estimate URL was written into `main.dart` | Moved to `AI_SERVER_URL` in `.env` (commit of 17 Aug 2026) |
 | Slow first prediction | Render's free tier puts the server to sleep, so the first request after a quiet spell is slow | A 60 second timeout on the screening call, and a fixed fallback estimate so the queue keeps working |
 
 ### Issues found in a later code review
 
 A review of the code after submission (October 2026) found problems the acceptance tests did not
-catch. They are listed here so the results above are read correctly:
+catch. The first one is fixed; the others are still open:
 
-- **Both prediction endpoints currently fail, and the app hides it** (SV-02 to SV-06). The saved
-  screening model expects four inputs (`Entry_Hour`, `Entry_Day`, `Patient Type`,
-  `Financial Class`) but the server passes three, and both endpoints send `Patient Type` as `1`
-  instead of `OUTPATIENT`. The app then uses its fallback of 25 minutes (screening) and 20 minutes
-  (doctor). With the right inputs the models predict about 10 minutes for screening and 30 minutes
-  for the doctor at 10 am on a Monday.
-- **Minutes are sent as decimals of the hour the wrong way** (ML-03). 10:30 becomes `10.3` instead
-  of `10.5`, so late in the hour (for example 10:59) the model already uses the next hour.
+- **Both prediction endpoints were failing, and the app hid it** (SV-02 to SV-06, ML-03). Fixed;
+  see the test table above.
 - **The doctor estimate gives up after 5 seconds**, while the screening call waits 60. When the
   server is asleep, the doctor estimate always falls back to 20 minutes.
 - **Passwords are stored and compared as plain text** in the `patients` table. They should move to
