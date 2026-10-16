@@ -213,6 +213,8 @@ A patient arriving at 11:00 on a Monday:
 
 ## Testing
 
+### Acceptance tests (from the report)
+
 Functional user acceptance testing on the full system (app, Supabase and AI server together):
 
 | ID | Module | Test | Expected | Result |
@@ -220,12 +222,45 @@ Functional user acceptance testing on the full system (app, Supabase and AI serv
 | UAT-01 | Patient authentication | Log in with valid credentials | Dashboard opens | Pass |
 | UAT-02 | Queue dashboard | Open the app to check the queue | Live ticket number and data shown | Pass |
 | UAT-03 | Time synchronisation | Change the phone time to get a number outside clinic hours | Request rejected | Pass |
-| UAT-04 | Prediction engine | New registration sent through Supabase | Estimate returned without a crash | Pass |
+| UAT-04 | Prediction engine | New registration sent through Supabase | Estimate returned without a crash | Pass* |
 | UAT-05 | Push notification | Queue reaches the calling threshold | Notification appears on the phone | Pass |
+
+\* UAT-04 only checked that the app did not crash. As the review below shows, the app falls back
+to a fixed estimate when the AI server fails, so this test would pass even if no prediction came
+back. A stronger test checks the server's own response, not just the screen.
 
 The models were checked for pipeline integrity (train and predict on the held-out test set
 without errors), valid output (continuous minutes within operating limits) and independence of
 the two stages.
+
+### Problems hit during development
+
+These were fixed before the final tests. Each one left a trace in the code:
+
+| Problem | What went wrong | Fix |
+|---|---|---|
+| Wrong day on the server | The AI server on Render runs on UTC, so early in the morning it still thought it was the day before | Shift the server clock to Malaysia time (UTC+8) before reading the day ([app.py](https://github.com/amirulfahmiii920-beep/qhealth-ai-server/blob/main/app.py)) |
+| Queue numbers outside clinic hours | The phone clock can be changed by the user | Read the time from a time service in `Asia/Kuala_Lumpur` instead of the phone, and refuse a number if it cannot be reached |
+| Slow first prediction | Render's free tier puts the server to sleep, so the first request after a quiet spell can take close to a minute | A 60 second timeout on the screening call, and a fixed fallback estimate so the queue keeps working |
+
+### Issues found in a later code review
+
+A review of the code after submission (October 2026) found problems the acceptance tests did not
+catch. They are listed here so the results above are read correctly:
+
+- **Both prediction endpoints currently fail, and the app hides it.** The saved screening model
+  expects four inputs (`Entry_Hour`, `Entry_Day`, `Patient Type`, `Financial Class`) but the server
+  only passes three, and both endpoints send `Patient Type` as the number `1` while the models were
+  trained on the text `OUTPATIENT`. Each call returns an error, so the app uses its fallback of
+  25 minutes (screening) and 20 minutes (doctor) on top of the queue rules. Loading the saved models
+  directly confirms they work once the inputs match: for 10 am on a Monday they predict about
+  10 minutes for screening and 30 minutes for the doctor.
+- **The doctor estimate gives up after 5 seconds**, while the screening call waits 60. When the
+  server is asleep, the doctor estimate always falls back to 20 minutes.
+- **Passwords are stored and compared as plain text** in the `patients` table. They should move to
+  Supabase Auth, which hashes them.
+- **The OneSignal REST key ships inside the app.** Notifications should be sent from a server
+  instead.
 
 ## Run it
 
