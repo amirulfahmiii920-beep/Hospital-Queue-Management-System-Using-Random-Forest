@@ -1,0 +1,81 @@
+import 'package:flutter/material.dart';
+
+class AppLang {
+  static ValueNotifier<String> current = ValueNotifier('English');
+
+  static const Map<String, Map<String, String>> _dict = {
+    'English': {
+      'settings': 'Settings',
+      'account': 'Account',
+      'change_pass': 'Change Password',
+      'privacy': 'Privacy Settings',
+      'notif': 'Notifications',
+      'queue_alert': 'Queue Push Alerts',
+      'email_alert': 'Email Notifications',
+      'general': 'General',
+      'language': 'Language',
+      'dark_mode': 'Dark Mode',
+      'about': 'About',
+      'tnc': 'Terms & Conditions',
+      'app_version': 'App Version',
+      'personal_info': 'Personal Info',
+      'medical_history': 'Medical History',
+      'appointment_records': 'Appointment Records',
+      'help_support': 'Help & Support',
+      'logout': 'Log Out',
+      'my_queue': 'My Queue No.',
+      'patients_ahead': 'Patients Ahead',
+      'patient_overview': 'Patient Overview',
+    },
+    'Bahasa Melayu': {
+      'settings': 'Tetapan',
+      'account': 'Akaun',
+      'change_pass': 'Tukar Kata Laluan',
+      'privacy': 'Tetapan Privasi',
+      'notif': 'Notifikasi',
+      'queue_alert': 'Amaran Giliran',
+      'email_alert': 'Notifikasi Emel',
+      'general': 'Umum',
+      'language': 'Bahasa',
+      'dark_mode': 'Mod Gelap',
+      'about': 'Tentang',
+      'tnc': 'Terma & Syarat',
+      'app_version': 'Versi Aplikasi',
+      'personal_info': 'Maklumat Peribadi',
+      'medical_history': 'Sejarah Perubatan',
+      'appointment_records': 'Rekod Temu Janji',
+      'help_support': 'Bantuan & Sokongan',
+      'logout': 'Log Keluar',
+      'my_queue': 'No. Giliran Saya',
+      'patients_ahead': 'Pesakit Di Hadapan',
+      'patient_overview': 'Tinjauan Pesakit',
+    },
+    '中文 (Mandarin)': {
+      'settings': '设置',
+      'account': '账户',
+      'change_pass': '更改密码',
+      'privacy': '隐私设置',
+      'notif': '通知',
+      'queue_alert': '排队警报',
+      'email_alert': '电子邮件通知',
+      'general': '常规',
+      'language': '语言',
+      'dark_mode': '深色模式',
+      'about': '关于',
+      'tnc': '条款和条件',
+      'app_version': '应用版本',
+      'personal_info': '个人信息',
+      'medical_history': '病史',
+      'appointment_records': '预约记录',
+      'help_support': '帮助与支持',
+      'logout': '登出',
+      'my_queue': '我的排队号',
+      'patients_ahead': '前方患者',
+      'patient_overview': '患者概览',
+    },
+  };
+
+  static String t(String key) {
+    return _dict[current.value]?[key] ?? _dict['English']?[key] ?? key;
+  }
+}
