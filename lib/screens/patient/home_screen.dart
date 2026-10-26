@@ -2,13 +2,14 @@ import 'dart:async';
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:video_player/video_player.dart';
 
 import '../../core/app_lang.dart';
 import '../../core/app_theme.dart';
 import '../../core/queue_data.dart';
+import '../../data/queue_repository.dart';
+import '../../models/queue_status.dart';
 import '../../widgets/app_base_screen.dart';
 import '../../widgets/patient_nav_bar.dart';
 import 'get_queue_screen.dart';
@@ -21,6 +22,8 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
+  final QueueRepository _queue = const QueueRepository();
+
   List<Map<String, dynamic>> _liveQueueOverview = [];
   Timer? _overviewFetchTimer;
   Timer? _overviewTickTimer;
@@ -493,71 +496,43 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   Future<void> _fetchLiveQueueOverview() async {
     try {
-      final supabase = Supabase.instance.client;
-      final response = await supabase
-          .from('hospital_queue')
-          .select('*, patients(first_name, last_name, full_name)')
-          .neq('screening_status', 'No Show')
-          .neq('consult_status', 'No Show')
-          .order('id', ascending: true);
+      final tickets = await _queue.liveTicketsWithNames();
 
       List<Map<String, dynamic>> newList = [];
       String currentStage = QueueData.isQueueActive.value
           ? QueueData.queueStage.value
           : 'Screening';
+      if (currentStage != 'Screening' && currentStage != 'Consultation') {
+        currentStage = '';
+      }
+      bool isConsultation = currentStage == 'Consultation';
       DateTime now = DateTime.now();
 
-      for (var record in response) {
-        String scrStatus = record['screening_status'] ?? '';
-        String conStatus = record['consult_status'] ?? '';
+      for (var ticket in tickets) {
+        QueueStatus currentStatus = ticket.statusFor(
+          consultation: isConsultation,
+        );
 
-        bool isValid = false;
-        String currentStatus = '';
+        // Only patients waiting or in the room for the current stage
+        if (currentStage.isEmpty || !currentStatus.isActive) continue;
 
-        if (currentStage == 'Screening' &&
-            (scrStatus == 'Waiting' || scrStatus == 'In Progress')) {
-          isValid = true;
-          currentStatus = scrStatus;
-        } else if (currentStage == 'Consultation' &&
-            (conStatus == 'Waiting' || conStatus == 'In Progress')) {
-          isValid = true;
-          currentStatus = conStatus;
-        }
+        String pName = ticket.overviewDisplayName;
 
-        if (!isValid) continue;
-
-        String pName = 'Unknown Patient';
-        if (record['patients'] != null && record['patients'] is Map) {
-          String fName = record['patients']['first_name'] ?? '';
-          String lName = record['patients']['last_name'] ?? '';
-          String fullName = record['patients']['full_name'] ?? '';
-
-          if (fName.isNotEmpty || lName.isNotEmpty) {
-            pName = '$fName $lName'.trim();
-          } else {
-            pName = fullName;
-          }
-        }
-
-        int ewtMins = currentStage == 'Screening'
-            ? (record['screening_ewt'] ?? 0)
-            : (record['doctor_ewt'] ?? 0);
+        int ewtMins = ticket.ewtFor(consultation: isConsultation);
         int startSecs = ewtMins * 60;
 
         // LATEST CODE : SYNC TIMER LOGIC
         int remaining;
 
         // 1. IF CURRENT USER, USE THE SYNCED TIMER VALUE (NO NEGATIVE TIME)
-        if (record['patient_id'].toString() == QueueData.currentUserId) {
+        if (ticket.patientId == QueueData.currentUserId) {
           remaining = QueueData.remainingSeconds.value;
         }
         // 2. IF NOT CURRENT USER, CALCULATE BASED ON TIMESTAMP
         else {
-          DateTime startTime = currentStage == 'Screening'
-              ? DateTime.parse(record['created_at']).toLocal()
-              : (record['screening_completed_at'] != null
-                    ? DateTime.parse(record['screening_completed_at']).toLocal()
-                    : now);
+          DateTime startTime = isConsultation
+              ? (ticket.screeningCompletedAt ?? now)
+              : (ticket.createdAt ?? now);
 
           int passedSecs = now.difference(startTime).inSeconds;
           if (passedSecs < 0) passedSecs = 0;
@@ -567,9 +542,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         }
 
         newList.add({
-          'id': record['id'].toString(),
+          'id': ticket.id.toString(),
           'name': pName,
-          'isMe': record['patient_id'].toString() == QueueData.currentUserId,
+          'isMe': ticket.patientId == QueueData.currentUserId,
           'seconds': remaining,
           'status': currentStatus,
         });
@@ -1086,7 +1061,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                 ),
                 child: Text(
                   secs <= 0
-                      ? (patient['status'] == 'In Progress'
+                      ? (patient['status'] == QueueStatus.inProgress
                             ? 'In Room'
                             : '00:00')
                       : _formatOverviewTime(secs),

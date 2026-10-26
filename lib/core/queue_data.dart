@@ -1,12 +1,16 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
+
+import '../data/queue_repository.dart';
+import '../models/queue_status.dart';
 
 // =========================================================================
 // 2.5 GLOBAL MEMORY (To ensure data doesn't get lost when switching screens)
 // =========================================================================
 class QueueData {
+  static const QueueRepository _queue = QueueRepository();
+
   static String currentUserId = '';
   static String currentUserName = 'Guest';
   // LATEST CODE: Global Memory for Staff
@@ -118,27 +122,19 @@ class QueueData {
     if (currentUserId.isEmpty || isQueueActive.value) return;
 
     try {
-      final supabase = Supabase.instance.client;
+      final ticket = await _queue.latestTicketFor(currentUserId);
 
-      final response = await supabase
-          .from('hospital_queue')
-          .select()
-          .eq('patient_id', currentUserId)
-          .neq('screening_status', 'No Show')
-          .neq('consult_status', 'No Show')
-          .order('id', ascending: false)
-          .limit(1)
-          .maybeSingle();
+      if (ticket != null) {
+        QueueStatus scrStatus = ticket.screeningStatus;
+        QueueStatus conStatus = ticket.consultStatus;
 
-      if (response != null) {
-        String scrStatus = response['screening_status'] ?? '';
-        String conStatus = response['consult_status'] ?? '';
-
-        if (scrStatus == 'Completed' && conStatus == 'Completed') {
+        if (scrStatus == QueueStatus.completed &&
+            conStatus == QueueStatus.completed) {
           return;
         }
 
-        DateTime createdAt = DateTime.parse(response['created_at']).toLocal();
+        DateTime? createdAt = ticket.createdAt;
+        if (createdAt == null) return;
         DateTime now = DateTime.now();
 
         // Check if the queue was created today; if not, ignore it
@@ -148,13 +144,13 @@ class QueueData {
           return;
         }
 
-        myQueueNumber = response['id'].toString();
+        myQueueNumber = ticket.id.toString();
         isQueueActive.value = true;
         hasConfirmedPresence = false;
 
-        if (scrStatus != 'Completed') {
+        if (scrStatus != QueueStatus.completed) {
           queueStage.value = 'Screening';
-          int ewtFromDb = response['screening_ewt'] ?? 0;
+          int ewtFromDb = ticket.screeningEwt;
 
           int passedSeconds = now.difference(createdAt).inSeconds;
           if (passedSeconds < 0) {
@@ -164,19 +160,17 @@ class QueueData {
           int leftover = startSeconds - passedSeconds;
           remainingSeconds.value = leftover > 0 ? leftover : 0;
 
-          if (scrStatus == 'In Progress') {
+          if (scrStatus == QueueStatus.inProgress) {
             patientStatusText.value =
                 'It is your turn! Please proceed to the Screening room.';
           } else {
             patientStatusText.value = 'Waiting for Screening...';
           }
-        } else if (conStatus != 'Completed') {
+        } else if (conStatus != QueueStatus.completed) {
           queueStage.value = 'Consultation';
-          int ewtFromDb = response['doctor_ewt'] ?? 0;
+          int ewtFromDb = ticket.doctorEwt;
 
-          DateTime screenDoneAt = response['screening_completed_at'] != null
-              ? DateTime.parse(response['screening_completed_at']).toLocal()
-              : now;
+          DateTime screenDoneAt = ticket.screeningCompletedAt ?? now;
 
           int passedSeconds = now.difference(screenDoneAt).inSeconds;
           if (passedSeconds < 0) {
@@ -186,7 +180,7 @@ class QueueData {
           int leftover = startSeconds - passedSeconds;
           remainingSeconds.value = leftover > 0 ? leftover : 0;
 
-          if (conStatus == 'In Progress') {
+          if (conStatus == QueueStatus.inProgress) {
             patientStatusText.value =
                 'It is your turn! Please proceed to the Doctor\'s room.';
           } else {
@@ -205,29 +199,23 @@ class QueueData {
 
   static Future<void> _syncPatientsAhead() async {
     try {
-      final supabase = Supabase.instance.client;
-
       if (isQueueActive.value &&
           myQueueNumber != '-' &&
           !myQueueNumber.contains('SKIP')) {
         // Use a local copy of myQueueNumber to avoid race conditions
         String checkingQueueId = myQueueNumber;
 
-        final myRecord = await supabase
-            .from('hospital_queue')
-            .select()
-            .eq('id', int.parse(checkingQueueId))
-            .maybeSingle();
+        final myRecord = await _queue.ticketById(int.parse(checkingQueueId));
 
         // If the queue number has changed since the last check, skip this sync
         if (checkingQueueId != myQueueNumber) return;
 
         if (myRecord != null) {
-          String currentScreeningStatus = myRecord['screening_status'] ?? '';
-          String currentConsultStatus = myRecord['consult_status'] ?? '';
+          QueueStatus currentScreeningStatus = myRecord.screeningStatus;
+          QueueStatus currentConsultStatus = myRecord.consultStatus;
 
-          if (currentScreeningStatus == 'No Show' ||
-              currentConsultStatus == 'No Show') {
+          if (currentScreeningStatus == QueueStatus.noShow ||
+              currentConsultStatus == QueueStatus.noShow) {
             isQueueActive.value = false;
             timer?.cancel();
             myQueueNumber = "SKIPPED (No Show)";
@@ -247,22 +235,22 @@ class QueueData {
           }
 
           if (queueStage.value == 'Screening') {
-            if (currentScreeningStatus == 'In Progress') {
+            if (currentScreeningStatus == QueueStatus.inProgress) {
               patientStatusText.value =
                   'It is your turn! Please proceed to the Screening room.';
-            } else if (currentScreeningStatus == 'Completed') {
+            } else if (currentScreeningStatus == QueueStatus.completed) {
               queueStage.value = 'Consultation';
               patientStatusText.value =
                   'Screening completed. Now queueing for consultation.';
-              startSeconds = (myRecord['doctor_ewt'] as int) * 60;
+              startSeconds = myRecord.doctorEwt * 60;
               remainingSeconds.value = startSeconds;
               hasConfirmedPresence = false;
             }
           } else if (queueStage.value == 'Consultation') {
-            if (currentConsultStatus == 'In Progress') {
+            if (currentConsultStatus == QueueStatus.inProgress) {
               patientStatusText.value =
                   'It is your turn! Please proceed to the Doctor\'s room.';
-            } else if (currentConsultStatus == 'Completed') {
+            } else if (currentConsultStatus == QueueStatus.completed) {
               isQueueActive.value = false;
               timer?.cancel();
               patientStatusText.value =
@@ -271,9 +259,9 @@ class QueueData {
             }
           }
 
-          int dbEwt = queueStage.value == 'Screening'
-              ? myRecord['screening_ewt']
-              : myRecord['doctor_ewt'];
+          int dbEwt = myRecord.ewtFor(
+            consultation: queueStage.value != 'Screening',
+          );
           int dbSeconds = dbEwt * 60;
 
           // LATEST CODE: ONLY UPDATE IF HOSPITAL STAFF CHANGES THE TIME (RESET)
@@ -306,25 +294,13 @@ class QueueData {
             }
           }
 
-          final countResponse = await supabase
-              .from('hospital_queue')
-              .select('id')
-              .eq(
-                queueStage.value == 'Screening'
-                    ? 'screening_status'
-                    : 'consult_status',
-                'Waiting',
-              )
-              .lt('id', int.parse(myQueueNumber));
-
-          patientsAhead.value = countResponse.length;
+          patientsAhead.value = await _queue.countWaitingAhead(
+            consultation: queueStage.value != 'Screening',
+            ticketId: int.parse(myQueueNumber),
+          );
         }
       } else {
-        final countResponse = await supabase
-            .from('hospital_queue')
-            .select('id')
-            .eq('screening_status', 'Waiting');
-        patientsAhead.value = countResponse.length;
+        patientsAhead.value = await _queue.countWaitingForScreening();
       }
     } catch (e) {
       debugPrint("Fail to sync queue Supabase: $e");
@@ -384,17 +360,12 @@ class QueueData {
         t.cancel();
 
         // LATEST CODE: AUTO SKIP THE QUEUE IF NOT CONFIRMED
-        final supabase = Supabase.instance.client;
-        String statusField = queueStage.value == 'Screening'
-            ? 'screening_status'
-            : 'consult_status';
-
         try {
           if (myQueueNumber != '-' && !myQueueNumber.contains('SKIP')) {
-            await supabase
-                .from('hospital_queue')
-                .update({statusField: 'No Show'})
-                .eq('id', int.parse(myQueueNumber));
+            await _queue.markNoShow(
+              int.parse(myQueueNumber),
+              consultation: queueStage.value != 'Screening',
+            );
           }
         } catch (e) {
           debugPrint("Error performing auto-skip: $e");
@@ -410,11 +381,7 @@ class QueueData {
     // 1. Update the database to mark the patient as present
     try {
       if (myQueueNumber != '-' && !myQueueNumber.contains('SKIP')) {
-        final supabase = Supabase.instance.client;
-        await supabase
-            .from('hospital_queue')
-            .update({'is_present': true})
-            .eq('id', int.parse(myQueueNumber));
+        await _queue.confirmPresence(int.parse(myQueueNumber));
       }
     } catch (e) {
       debugPrint("Failed to update presence: $e");

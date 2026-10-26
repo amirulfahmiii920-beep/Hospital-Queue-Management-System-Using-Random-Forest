@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:login_interface/services/ewt_calculator.dart';
+import 'package:qhealth/services/ewt_calculator.dart';
 
 void main() {
   group('Screening EWT', () {

@@ -2,10 +2,12 @@ import 'dart:async';
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../core/app_theme.dart';
 import '../../core/queue_data.dart';
+import '../../data/queue_repository.dart';
+import '../../models/queue_status.dart';
+import '../../models/queue_ticket.dart';
 import '../../services/ai_server_service.dart';
 import '../../services/ewt_calculator.dart';
 import '../../services/push_notification_service.dart';
@@ -25,7 +27,9 @@ class _StaffHomeScreenState extends State<StaffHomeScreen> {
   int _selectedTabIndex = 0;
   Timer? _refreshTimer;
 
-  static List<Map<String, dynamic>> _queueList = [];
+  static List<QueueTicket> _queueList = [];
+
+  final QueueRepository _queue = const QueueRepository();
 
   // TAB NAME
   List<String> get _tabs => [
@@ -50,37 +54,26 @@ class _StaffHomeScreenState extends State<StaffHomeScreen> {
   }
 
   // FILTER QUEUE BASED ON SELECTED TAB
-  List<Map<String, dynamic>> get _filteredQueue {
-    String statusToMatch = _tabs[_selectedTabIndex];
-    // If the tab is "Screening" or "Consulting", we treat it as "In Progress" for filtering
-    if (statusToMatch == 'Screening' || statusToMatch == 'Consulting') {
-      statusToMatch = 'In Progress';
-    }
+  // Status shown on each tab, in the same order as _tabs
+  // ("Screening" and "Consulting" mean the patient is in the room)
+  static const List<QueueStatus> _tabStatuses = [
+    QueueStatus.waiting,
+    QueueStatus.inProgress,
+    QueueStatus.noShow,
+  ];
 
-    if (widget.isConsultation) {
-      return _queueList
-          .where((p) => p['consult_status'] == statusToMatch)
-          .toList();
-    } else {
-      return _queueList
-          .where((p) => p['screening_status'] == statusToMatch)
-          .toList();
-    }
-  }
+  List<QueueTicket> _ticketsWithStatus(QueueStatus status) => _queueList
+      .where((p) => p.statusFor(consultation: widget.isConsultation) == status)
+      .toList();
 
-  int get _totalWaiting {
-    if (widget.isConsultation) {
-      return _queueList.where((p) => p['consult_status'] == 'Waiting').length;
-    } else {
-      return _queueList.where((p) => p['screening_status'] == 'Waiting').length;
-    }
-  }
+  List<QueueTicket> get _filteredQueue =>
+      _ticketsWithStatus(_tabStatuses[_selectedTabIndex]);
+
+  int get _totalWaiting => _ticketsWithStatus(QueueStatus.waiting).length;
 
   // LATEST CODE : (LONGEST WAIT)
   Map<String, String> get _longestWaitData {
-    List<Map<String, dynamic>> waitingList = widget.isConsultation
-        ? _queueList.where((p) => p['consult_status'] == 'Waiting').toList()
-        : _queueList.where((p) => p['screening_status'] == 'Waiting').toList();
+    List<QueueTicket> waitingList = _ticketsWithStatus(QueueStatus.waiting);
 
     if (waitingList.isEmpty) {
       return {'time': '0 mins', 'name': 'No patients'};
@@ -92,18 +85,14 @@ class _StaffHomeScreenState extends State<StaffHomeScreen> {
 
     for (var p in waitingList) {
       DateTime? startTime = widget.isConsultation
-          ? (p['screening_completed_at'] != null
-                ? DateTime.parse(p['screening_completed_at']).toLocal()
-                : null)
-          : (p['created_at'] != null
-                ? DateTime.parse(p['created_at']).toLocal()
-                : null);
+          ? p.screeningCompletedAt
+          : p.createdAt;
 
       if (startTime != null) {
         int mins = now.difference(startTime).inMinutes;
         if (mins > maxMins) {
           maxMins = mins;
-          longestPatientName = p['name'] ?? 'Unknown';
+          longestPatientName = p.staffDisplayName;
         }
       }
     }
@@ -137,23 +126,11 @@ class _StaffHomeScreenState extends State<StaffHomeScreen> {
 
   Future<void> _fetchQueueData() async {
     try {
-      final supabase = Supabase.instance.client;
-      final response = await supabase
-          .from('hospital_queue')
-          .select(
-            'id, patient_id, queue_no, screening_status, consult_status, screening_ewt, doctor_ewt, created_at, screening_completed_at, consult_completed_at, patients(full_name)',
-          )
-          .order('id', ascending: true);
+      final tickets = await _queue.allTicketsForStaff();
 
       if (mounted) {
         setState(() {
-          _queueList = List<Map<String, dynamic>>.from(response).map((item) {
-            final patientData = item['patients'] as Map<String, dynamic>?;
-            item['name'] = patientData != null
-                ? patientData['full_name']
-                : 'Unknown Patient';
-            return item;
-          }).toList();
+          _queueList = tickets;
         });
       }
     } catch (e) {
@@ -162,22 +139,11 @@ class _StaffHomeScreenState extends State<StaffHomeScreen> {
   }
 
   // HANDLE CALLING PATIENT (UPDATE STATUS + SEND PUSH NOTIFICATION)
-  void _handleCallPatient(Map<String, dynamic> patient) async {
-    final supabase = Supabase.instance.client;
+  void _handleCallPatient(QueueTicket patient) async {
     try {
-      if (widget.isConsultation) {
-        await supabase
-            .from('hospital_queue')
-            .update({'consult_status': 'In Progress'})
-            .eq('id', patient['id']);
-      } else {
-        await supabase
-            .from('hospital_queue')
-            .update({'screening_status': 'In Progress'})
-            .eq('id', patient['id']);
-      }
+      await _queue.callPatient(patient.id, consultation: widget.isConsultation);
 
-      String targetId = patient['patient_id'].toString();
+      String targetId = patient.patientId;
       await sendPushNotification(
         targetId,
         "It's Your Turn!",
@@ -192,22 +158,14 @@ class _StaffHomeScreenState extends State<StaffHomeScreen> {
 
   void _addTimeToQueue(int extraMins) async {
     try {
-      final supabase = Supabase.instance.client;
-      List<Map<String, dynamic>> waitingList = _filteredQueue;
+      List<QueueTicket> waitingList = _filteredQueue;
       for (var p in waitingList) {
-        if (widget.isConsultation) {
-          int newEwt = (p['doctor_ewt'] as int) + extraMins;
-          await supabase
-              .from('hospital_queue')
-              .update({'doctor_ewt': newEwt})
-              .eq('id', p['id']);
-        } else {
-          int newEwt = (p['screening_ewt'] as int) + extraMins;
-          await supabase
-              .from('hospital_queue')
-              .update({'screening_ewt': newEwt})
-              .eq('id', p['id']);
-        }
+        int newEwt = p.ewtFor(consultation: widget.isConsultation) + extraMins;
+        await _queue.setEwt(
+          p.id,
+          consultation: widget.isConsultation,
+          minutes: newEwt,
+        );
       }
       _fetchQueueData();
       if (mounted) {
@@ -223,7 +181,7 @@ class _StaffHomeScreenState extends State<StaffHomeScreen> {
     }
   }
 
-  void _showAddTimeDialog(Map<String, dynamic> patient) {
+  void _showAddTimeDialog(QueueTicket patient) {
     final TextEditingController timeController = TextEditingController();
     showDialog(
       context: context,
@@ -260,7 +218,7 @@ class _StaffHomeScreenState extends State<StaffHomeScreen> {
                     ),
                     const SizedBox(height: 10),
                     Text(
-                      'Patient ${patient['name']} is taking longer than expected. Enter extra time (in minutes) to delay the entire queue:',
+                      'Patient ${patient.staffDisplayName} is taking longer than expected. Enter extra time (in minutes) to delay the entire queue:',
                       textAlign: TextAlign.center,
                       style: TextStyle(
                         color: Colors.white.withValues(alpha: 0.6),
@@ -353,8 +311,7 @@ class _StaffHomeScreenState extends State<StaffHomeScreen> {
     );
   }
 
-  void _handlePatientDone(Map<String, dynamic> patient) async {
-    final supabase = Supabase.instance.client;
+  void _handlePatientDone(QueueTicket patient) async {
     String nowIso = DateTime.now().toUtc().toIso8601String();
 
     try {
@@ -364,12 +321,10 @@ class _StaffHomeScreenState extends State<StaffHomeScreen> {
         int patientsWaitingForDoc = 0;
 
         for (var p in _queueList) {
-          String cStatus = p['consult_status'] ?? '';
-          if (cStatus == 'Waiting' || cStatus == 'In Progress') {
+          if (p.consultStatus.isActive) {
             patientsWaitingForDoc++;
-            int ewt = p['doctor_ewt'] ?? 0;
-            if (ewt > maxConsultEwt) {
-              maxConsultEwt = ewt;
+            if (p.doctorEwt > maxConsultEwt) {
+              maxConsultEwt = p.doctorEwt;
             }
           }
         }
@@ -387,25 +342,20 @@ class _StaffHomeScreenState extends State<StaffHomeScreen> {
         );
 
         // 4. UPDATE DATABASE SUPABASE
-        await supabase
-            .from('hospital_queue')
-            .update({
-              'screening_status': 'Completed',
-              'consult_status': 'Waiting',
-              'doctor_ewt':
-                  newDoctorEwt, // Update doctor_ewt for the next patient
-              'screening_completed_at': nowIso,
-            })
-            .eq('id', patient['id']);
+        await _queue.finishScreening(
+          patient.id,
+          doctorEwt: newDoctorEwt,
+          completedAtIso: nowIso,
+        );
 
         // Update QueueData.queueStage if the current patient is the one being processed
-        if (QueueData.myQueueNumber == patient['queue_no']) {
+        if (QueueData.myQueueNumber == patient.queueNo) {
           QueueData.queueStage.value = 'Consultation';
         }
         int delayConsult = reminderDelaySeconds(newDoctorEwt);
         if (delayConsult > 0) {
           sendScheduledPushNotification(
-            patient['patient_id'].toString(),
+            patient.patientId,
             "Doctor Consultation Ready",
             "Only 3 minutes left to see the doctor. Please get ready.",
             delayConsult,
@@ -413,52 +363,33 @@ class _StaffHomeScreenState extends State<StaffHomeScreen> {
         }
       } else {
         // IF CONSULTATION IS DONE, MARK AS COMPLETED
-        await supabase
-            .from('hospital_queue')
-            .update({
-              'consult_status': 'Completed',
-              'consult_completed_at': nowIso,
-            })
-            .eq('id', patient['id']);
+        await _queue.finishConsultation(patient.id, completedAtIso: nowIso);
       }
 
       await _fetchQueueData();
 
       // QUEUE TIME REDUCTION & DYNAMIC NOTIFICATION SYSTEM
-      List<Map<String, dynamic>> waitingList = widget.isConsultation
-          ? _queueList.where((p) => p['consult_status'] == 'Waiting').toList()
-          : _queueList
-                .where((p) => p['screening_status'] == 'Waiting')
-                .toList();
+      List<QueueTicket> waitingList = _ticketsWithStatus(QueueStatus.waiting);
 
       if (waitingList.isNotEmpty) {
         var nextPatient = waitingList.first;
-        int oldEwt = widget.isConsultation
-            ? nextPatient['doctor_ewt']
-            : nextPatient['screening_ewt'];
+        int oldEwt = nextPatient.ewtFor(consultation: widget.isConsultation);
 
         if (oldEwt > 5) {
           int timeSaved = oldEwt - 5;
           for (var p in waitingList) {
             int updatedEwt;
-            String targetId = p['patient_id'].toString();
+            String targetId = p.patientId;
 
             // 1. UPDATE NEW TIME IN DATABASE
-            if (widget.isConsultation) {
-              updatedEwt = p['doctor_ewt'] - timeSaved;
-              if (updatedEwt < 0) updatedEwt = 0;
-              await supabase
-                  .from('hospital_queue')
-                  .update({'doctor_ewt': updatedEwt})
-                  .eq('id', p['id']);
-            } else {
-              updatedEwt = p['screening_ewt'] - timeSaved;
-              if (updatedEwt < 0) updatedEwt = 0;
-              await supabase
-                  .from('hospital_queue')
-                  .update({'screening_ewt': updatedEwt})
-                  .eq('id', p['id']);
-            }
+            updatedEwt =
+                p.ewtFor(consultation: widget.isConsultation) - timeSaved;
+            if (updatedEwt < 0) updatedEwt = 0;
+            await _queue.setEwt(
+              p.id,
+              consultation: widget.isConsultation,
+              minutes: updatedEwt,
+            );
 
             // 2. FIRE LIVE NOTIFICATION IF TIME CHANGES DRASTICALLY
             if (updatedEwt > 0 && updatedEwt <= 3) {
@@ -476,7 +407,7 @@ class _StaffHomeScreenState extends State<StaffHomeScreen> {
             }
           }
 
-          if (QueueData.myQueueNumber == nextPatient['queue_no']) {
+          if (QueueData.myQueueNumber == nextPatient.queueNo) {
             QueueData.remainingSeconds.value = 301;
           }
         }
@@ -486,8 +417,8 @@ class _StaffHomeScreenState extends State<StaffHomeScreen> {
           SnackBar(
             content: Text(
               !widget.isConsultation
-                  ? '${patient['name']} screening completed.'
-                  : '${patient['name']} consultation completed.',
+                  ? '${patient.staffDisplayName} screening completed.'
+                  : '${patient.staffDisplayName} consultation completed.',
             ),
             backgroundColor: Colors.green,
           ),
@@ -620,21 +551,11 @@ class _StaffHomeScreenState extends State<StaffHomeScreen> {
                         String timeLabel = '';
                         String timeValue = '';
 
-                        DateTime? createdAt = patient['created_at'] != null
-                            ? DateTime.parse(patient['created_at']).toLocal()
-                            : null;
+                        DateTime? createdAt = patient.createdAt;
                         DateTime? screenCompletedAt =
-                            patient['screening_completed_at'] != null
-                            ? DateTime.parse(
-                                patient['screening_completed_at'],
-                              ).toLocal()
-                            : null;
+                            patient.screeningCompletedAt;
                         DateTime? consultCompletedAt =
-                            patient['consult_completed_at'] != null
-                            ? DateTime.parse(
-                                patient['consult_completed_at'],
-                              ).toLocal()
-                            : null;
+                            patient.consultCompletedAt;
 
                         if (!widget.isConsultation) {
                           if (isWaitingTab) {
@@ -702,7 +623,7 @@ class _StaffHomeScreenState extends State<StaffHomeScreen> {
                                         ? themeColor
                                         : Colors.black26,
                                     child: Text(
-                                      patient['queue_no'],
+                                      patient.queueNo,
                                       style: const TextStyle(
                                         color: Colors.white,
                                         fontWeight: FontWeight.bold,
@@ -716,7 +637,7 @@ class _StaffHomeScreenState extends State<StaffHomeScreen> {
                                           CrossAxisAlignment.start,
                                       children: [
                                         Text(
-                                          patient['name'],
+                                          patient.staffDisplayName,
                                           overflow: TextOverflow.ellipsis,
                                           maxLines: 1,
                                           style: const TextStyle(
@@ -733,9 +654,8 @@ class _StaffHomeScreenState extends State<StaffHomeScreen> {
                                             // 1. Calculate remaining time
                                             int assignedEwt =
                                                 widget.isConsultation
-                                                ? (patient['doctor_ewt'] ?? 0)
-                                                : (patient['screening_ewt'] ??
-                                                      0);
+                                                ? patient.doctorEwt
+                                                : patient.screeningEwt;
                                             int elapsedMins = 0;
 
                                             if (!widget.isConsultation &&
@@ -754,8 +674,7 @@ class _StaffHomeScreenState extends State<StaffHomeScreen> {
                                                 assignedEwt - elapsedMins;
 
                                             // 2. Determine status
-                                            bool isPresent =
-                                                patient['is_present'] == true;
+                                            bool isPresent = patient.isPresent;
                                             bool isTimeUp = remainingMins <= 0;
 
                                             String presenceText =
@@ -805,8 +724,8 @@ class _StaffHomeScreenState extends State<StaffHomeScreen> {
                                         if (isWaitingTab)
                                           Text(
                                             widget.isConsultation
-                                                ? 'EWT: ${patient['doctor_ewt']} mins'
-                                                : 'EWT: ${patient['screening_ewt']} mins',
+                                                ? 'EWT: ${patient.doctorEwt} mins'
+                                                : 'EWT: ${patient.screeningEwt} mins',
                                             style: const TextStyle(
                                               color: Colors.orangeAccent,
                                               fontSize: 13,
@@ -839,30 +758,14 @@ class _StaffHomeScreenState extends State<StaffHomeScreen> {
                                     Expanded(
                                       child: OutlinedButton(
                                         onPressed: () async {
-                                          final supabase =
-                                              Supabase.instance.client;
                                           String nowIso = DateTime.now()
                                               .toUtc()
                                               .toIso8601String();
-                                          if (widget.isConsultation) {
-                                            await supabase
-                                                .from('hospital_queue')
-                                                .update({
-                                                  'consult_status': 'No Show',
-                                                  'consult_completed_at':
-                                                      nowIso,
-                                                })
-                                                .eq('id', patient['id']);
-                                          } else {
-                                            await supabase
-                                                .from('hospital_queue')
-                                                .update({
-                                                  'screening_status': 'No Show',
-                                                  'screening_completed_at':
-                                                      nowIso,
-                                                })
-                                                .eq('id', patient['id']);
-                                          }
+                                          await _queue.markNoShow(
+                                            patient.id,
+                                            consultation: widget.isConsultation,
+                                            completedAtIso: nowIso,
+                                          );
                                           _fetchQueueData();
                                         },
                                         style: OutlinedButton.styleFrom(

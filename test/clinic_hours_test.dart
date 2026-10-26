@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:login_interface/services/clinic_hours.dart';
+import 'package:qhealth/services/clinic_hours.dart';
 
 void main() {
   test('closed just before 8:00 AM', () {

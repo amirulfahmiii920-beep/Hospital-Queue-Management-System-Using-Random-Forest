@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../core/app_lang.dart';
 import '../../core/app_theme.dart';
 import '../../core/queue_data.dart';
+import '../../data/auth_repository.dart';
 import '../../widgets/app_base_screen.dart';
 import '../../widgets/patient_nav_bar.dart';
 import '../auth/login_screen.dart';
@@ -140,7 +140,7 @@ class ProfileScreen extends StatelessWidget {
                       title: AppLang.t('logout'),
                       isLogout: true,
                       onTap: () async {
-                        await Supabase.instance.client.auth.signOut();
+                        await const AuthRepository().signOut();
                         QueueData.clearData();
 
                         // 3. Kembali ke skrin Login

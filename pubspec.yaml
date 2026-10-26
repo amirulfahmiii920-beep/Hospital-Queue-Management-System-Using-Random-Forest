@@ -1,5 +1,5 @@
-name: login_interface
-description: "A new Flutter project."
+name: qhealth
+description: "Q-Health: hospital queue app with AI waiting-time estimates."
 publish_to: 'none'
 
 version: 1.0.0+1

@@ -320,6 +320,14 @@ lib/
   main.dart            start-up: loads .env, Supabase and OneSignal
   app.dart             MaterialApp and theme switching
   core/                language strings, theme colours, shared queue state (QueueData)
+  models/
+    queue_status.dart  enum for Waiting, In Progress, Completed, No Show, None
+    queue_ticket.dart  one row of the hospital_queue table, typed
+  data/                repositories: the only place that talks to Supabase
+    queue_repository.dart     every read and write on hospital_queue
+    patient_repository.dart   patients table
+    staff_repository.dart     staff table
+    auth_repository.dart      Google sign-in and sign-out
   services/
     ewt_calculator.dart       waiting-time rules for both queues (unit tested)
     ai_server_service.dart    calls to the AI server, with fallback when it is down
@@ -330,7 +338,7 @@ lib/
     patient/           home dashboard, get queue, chatbot, notifications, profile, settings
     staff/             staff login, screening and consultation dashboard, staff profile
   widgets/             shared layout, form fields and bottom navigation bars
-test/                  unit tests for the EWT rules and clinic hours
+test/                  unit tests for the EWT rules, clinic hours and queue model
 assets/                images and the intro video
 .env.example           the keys the app needs
 docs/screenshots/      pictures used in this README

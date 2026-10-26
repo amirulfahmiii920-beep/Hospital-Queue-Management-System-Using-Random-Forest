@@ -2,10 +2,11 @@ import 'dart:ui';
 
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../core/app_theme.dart';
 import '../../core/queue_data.dart';
+import '../../data/auth_repository.dart';
+import '../../data/patient_repository.dart';
 import '../../widgets/app_base_screen.dart';
 import '../../widgets/form_widgets.dart';
 import '../patient/home_screen.dart';
@@ -24,6 +25,9 @@ class LoginScreen extends StatefulWidget {
 }
 
 class _LoginScreenState extends State<LoginScreen> {
+  final PatientRepository _patients = const PatientRepository();
+  final AuthRepository _auth = const AuthRepository();
+
   bool _rememberMe = false;
   bool _isLoading = false;
   bool _obscurePassword = true; // EYE ICON FOR PASSWORD FIELD
@@ -36,17 +40,12 @@ class _LoginScreenState extends State<LoginScreen> {
     super.initState();
     _loadSavedCredentials(); // Load saved credentials on init
 
-    Supabase.instance.client.auth.onAuthStateChange.listen((data) async {
+    _auth.onAuthStateChange.listen((data) async {
       final session = data.session;
       if (session != null) {
         final user = session.user;
-        final supabase = Supabase.instance.client;
 
-        final patientRecord = await supabase
-            .from('patients')
-            .select()
-            .eq('email', user.email ?? '')
-            .maybeSingle();
+        final patientRecord = await _patients.findByEmail(user.email ?? '');
 
         if (patientRecord == null) {
           if (mounted) {
@@ -114,13 +113,7 @@ class _LoginScreenState extends State<LoginScreen> {
     setState(() => _isLoading = true);
 
     try {
-      final supabase = Supabase.instance.client;
-
-      final user = await supabase
-          .from('patients')
-          .select()
-          .eq('username', _usernameController.text)
-          .maybeSingle();
+      final user = await _patients.findByUsername(_usernameController.text);
 
       if (user == null) {
         if (mounted) {
@@ -356,10 +349,7 @@ class _LoginScreenState extends State<LoginScreen> {
                     GestureDetector(
                       onTap: () async {
                         try {
-                          await Supabase.instance.client.auth.signInWithOAuth(
-                            OAuthProvider.google,
-                            redirectTo: 'io.supabase.qhealth://login-callback',
-                          );
+                          await _auth.signInWithGoogle();
                         } catch (e) {
                           if (!context.mounted) return;
                           ScaffoldMessenger.of(context).showSnackBar(

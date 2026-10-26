@@ -1,9 +1,9 @@
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../core/queue_data.dart';
+import '../../data/staff_repository.dart';
 import '../auth/login_screen.dart';
 import 'staff_home_screen.dart';
 
@@ -15,6 +15,8 @@ class StaffLoginScreen extends StatefulWidget {
 }
 
 class _StaffLoginScreenState extends State<StaffLoginScreen> {
+  final StaffRepository _staff = const StaffRepository();
+
   bool _isLoading = false;
   bool _obscurePassword = true;
 
@@ -44,14 +46,8 @@ class _StaffLoginScreenState extends State<StaffLoginScreen> {
     setState(() => _isLoading = true);
 
     try {
-      final supabase = Supabase.instance.client;
-
       // 1. CHECK IF STAFF ID EXISTS IN DATABASE
-      final user = await supabase
-          .from('staff')
-          .select()
-          .eq('staff_id', _staffIdCtrl.text)
-          .maybeSingle();
+      final user = await _staff.findByStaffId(_staffIdCtrl.text);
 
       if (user == null) {
         if (mounted) {

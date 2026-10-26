@@ -1,10 +1,10 @@
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../core/app_theme.dart';
 import '../../core/queue_data.dart';
+import '../../data/patient_repository.dart';
 import '../../widgets/app_base_screen.dart';
 import '../../widgets/form_widgets.dart';
 import '../patient/home_screen.dart';
@@ -25,6 +25,8 @@ class CompleteProfileScreen extends StatefulWidget {
 }
 
 class _CompleteProfileScreenState extends State<CompleteProfileScreen> {
+  final PatientRepository _patients = const PatientRepository();
+
   final _icController = TextEditingController();
   final _phoneController = TextEditingController();
   final _usernameController = TextEditingController();
@@ -46,8 +48,6 @@ class _CompleteProfileScreenState extends State<CompleteProfileScreen> {
     setState(() => _isLoading = true);
 
     try {
-      final supabase = Supabase.instance.client;
-
       // Split full name into first and last names
       List<String> nameParts = widget.fullName.split(' ');
       String firstName = nameParts.isNotEmpty ? nameParts.first : '';
@@ -56,20 +56,16 @@ class _CompleteProfileScreenState extends State<CompleteProfileScreen> {
           : '';
 
       // Insert new patient record into the database
-      final response = await supabase
-          .from('patients')
-          .insert({
-            'username': _usernameController.text,
-            'full_name': widget.fullName,
-            'first_name': firstName,
-            'last_name': lastName,
-            'email': widget.email,
-            'ic_number': _icController.text,
-            'phone': _phoneController.text,
-            'password': 'oauth_google_account',
-          })
-          .select()
-          .single();
+      final response = await _patients.createAndReturn({
+        'username': _usernameController.text,
+        'full_name': widget.fullName,
+        'first_name': firstName,
+        'last_name': lastName,
+        'email': widget.email,
+        'ic_number': _icController.text,
+        'phone': _phoneController.text,
+        'password': 'oauth_google_account',
+      });
 
       if (mounted) {
         // save data into global memory of the application

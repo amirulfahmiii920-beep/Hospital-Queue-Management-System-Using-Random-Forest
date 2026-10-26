@@ -2,10 +2,10 @@ import 'dart:ui';
 
 import 'package:flutter/material.dart';
 import 'package:onesignal_flutter/onesignal_flutter.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../core/app_theme.dart';
 import '../../core/queue_data.dart';
+import '../../data/queue_repository.dart';
 import '../../services/ai_server_service.dart';
 import '../../services/clinic_hours.dart';
 import '../../services/ewt_calculator.dart';
@@ -30,19 +30,14 @@ class _GetQueueScreenState extends State<GetQueueScreen> {
   // Variable to prevent multiple button presses
   bool _isCheckingTime = false;
 
+  final QueueRepository _queue = const QueueRepository();
+
   void _generateQueue() async {
     setState(() => _isLoading = true);
 
     try {
-      final supabase = Supabase.instance.client;
-
       // 1. COUNT PATIENTS CURRENTLY WAITING IN SCREENING
-      final countResponse = await supabase
-          .from('hospital_queue')
-          .select('id')
-          .eq('screening_status', 'Waiting');
-
-      int patientsAheadCount = countResponse.length;
+      int patientsAheadCount = await _queue.countWaitingForScreening();
 
       // 2. GET BASE EWT FROM AI (PYTHON SERVER)
       // ONLY CALL AI SERVER IF THERE ARE PATIENTS AHEAD
@@ -52,18 +47,13 @@ class _GetQueueScreenState extends State<GetQueueScreen> {
       }
 
       // 3. GET MAX EXISTING EWT FROM SUPABASE FOR PATIENTS WITH STATUS "Waiting" OR "In Progress"
-      final queueResponse = await supabase
-          .from('hospital_queue')
-          .select('id, screening_status, screening_ewt');
+      final screeningQueue = await _queue.screeningQueue();
 
       int maxExistingEwt = 0;
-      for (var record in queueResponse) {
-        String status = record['screening_status'] ?? '';
-        if (status == 'Waiting' || status == 'In Progress') {
-          int ewt = record['screening_ewt'] ?? 0;
-          if (ewt > maxExistingEwt) {
-            maxExistingEwt = ewt;
-          }
+      for (var ticket in screeningQueue) {
+        if (ticket.screeningStatus.isActive &&
+            ticket.screeningEwt > maxExistingEwt) {
+          maxExistingEwt = ticket.screeningEwt;
         }
       }
 
@@ -85,19 +75,16 @@ class _GetQueueScreenState extends State<GetQueueScreen> {
       String generatedQueueNo =
           'Q-${DateTime.now().millisecondsSinceEpoch.toString().substring(9)}';
 
-      final response = await supabase.from('hospital_queue').insert({
-        'queue_no': generatedQueueNo,
-        'patient_id': validPatientId,
-        'screening_status': 'Waiting',
-        'consult_status': 'None',
-        'screening_ewt': calculatedWaitTime,
-        'doctor_ewt': 0,
-      }).select();
+      final ticket = await _queue.createTicket(
+        queueNo: generatedQueueNo,
+        patientId: validPatientId,
+        screeningEwt: calculatedWaitTime,
+      );
 
       if (mounted) {
         setState(() {
-          _assignedQueueNumber = response[0]['id'].toString();
-          _estimatedWaitTime = response[0]['screening_ewt'] as int;
+          _assignedQueueNumber = ticket.id.toString();
+          _estimatedWaitTime = ticket.screeningEwt;
           _isLoading = false;
           _hasQueue = true;
         });

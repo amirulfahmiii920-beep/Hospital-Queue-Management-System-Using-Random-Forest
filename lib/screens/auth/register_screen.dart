@@ -1,9 +1,9 @@
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../core/app_theme.dart';
+import '../../data/patient_repository.dart';
 import '../../widgets/app_base_screen.dart';
 import '../../widgets/form_widgets.dart';
 
@@ -16,6 +16,8 @@ class RegisterScreen extends StatefulWidget {
 }
 
 class _RegisterScreenState extends State<RegisterScreen> {
+  final PatientRepository _patients = const PatientRepository();
+
   final _usernameController = TextEditingController();
   final _fullNameController = TextEditingController();
   final _firstNameController = TextEditingController();
@@ -44,9 +46,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
     setState(() => _isLoading = true);
 
     try {
-      final supabase = Supabase.instance.client;
-
-      await supabase.from('patients').insert({
+      await _patients.create({
         'username': _usernameController.text,
         'password': _passwordController.text,
         'full_name': _fullNameController.text,

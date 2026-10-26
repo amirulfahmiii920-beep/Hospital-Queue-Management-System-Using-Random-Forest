@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../core/queue_data.dart';
+import '../../data/queue_repository.dart';
+import '../../models/queue_status.dart';
 import '../../widgets/staff_nav_bar.dart';
 import 'staff_login_screen.dart';
 
@@ -14,6 +15,8 @@ class StaffProfileScreen extends StatefulWidget {
 }
 
 class _StaffProfileScreenState extends State<StaffProfileScreen> {
+  final QueueRepository _queue = const QueueRepository();
+
   int _completedToday = 0;
   int _pendingPatients = 0;
   bool _isLoadingStats = true;
@@ -27,32 +30,28 @@ class _StaffProfileScreenState extends State<StaffProfileScreen> {
   // FUNCTION: FETCH STAFF STATS (COMPLETED & PENDING)
   Future<void> _fetchStaffStats() async {
     try {
-      final supabase = Supabase.instance.client;
-
       // Set the start of the day
       DateTime now = DateTime.now();
       DateTime startOfDay = DateTime(now.year, now.month, now.day);
       String startIso = startOfDay.toUtc().toIso8601String();
 
       // Fetch all patients for today only from the database
-      final response = await supabase
-          .from('hospital_queue')
-          .select('screening_status, consult_status')
-          .gte('created_at', startIso);
+      final tickets = await _queue.statusesSince(startIso);
 
       int completed = 0;
       int pending = 0;
 
-      for (var record in response) {
-        String sStatus = record['screening_status'] ?? '';
-        String cStatus = record['consult_status'] ?? '';
+      for (var ticket in tickets) {
+        QueueStatus sStatus = ticket.screeningStatus;
+        QueueStatus cStatus = ticket.consultStatus;
 
         // Calculate how many patients have completed their process
-        if (sStatus == 'Completed' || cStatus == 'Completed') {
+        if (sStatus == QueueStatus.completed ||
+            cStatus == QueueStatus.completed) {
           completed++;
         }
         // Calculate how many patients are still waiting
-        if (sStatus == 'Waiting' || cStatus == 'Waiting') {
+        if (sStatus == QueueStatus.waiting || cStatus == QueueStatus.waiting) {
           pending++;
         }
       }

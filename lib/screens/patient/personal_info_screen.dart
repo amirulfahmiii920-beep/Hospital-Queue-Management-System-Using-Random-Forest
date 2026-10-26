@@ -1,10 +1,10 @@
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../core/app_theme.dart';
 import '../../core/queue_data.dart';
+import '../../data/patient_repository.dart';
 import '../../widgets/app_base_screen.dart';
 import '../../widgets/form_widgets.dart';
 
@@ -17,6 +17,8 @@ class PersonalInfoScreen extends StatefulWidget {
 }
 
 class _PersonalInfoScreenState extends State<PersonalInfoScreen> {
+  final PatientRepository _patients = const PatientRepository();
+
   final _fullNameCtrl = TextEditingController();
   final _icCtrl = TextEditingController();
   final _phoneCtrl = TextEditingController();
@@ -36,12 +38,7 @@ class _PersonalInfoScreenState extends State<PersonalInfoScreen> {
   // FUNCTION 1: FETCH DATA FROM SUPABASE
   Future<void> _fetchPatientData() async {
     try {
-      final supabase = Supabase.instance.client;
-      final response = await supabase
-          .from('patients')
-          .select()
-          .eq('id', QueueData.currentUserId) // Filter by the current user's ID
-          .maybeSingle();
+      final response = await _patients.findById(QueueData.currentUserId);
 
       if (response != null && mounted) {
         setState(() {
@@ -68,18 +65,14 @@ class _PersonalInfoScreenState extends State<PersonalInfoScreen> {
   Future<void> _saveProfileData() async {
     setState(() => _isSaving = true);
     try {
-      final supabase = Supabase.instance.client;
-      await supabase
-          .from('patients')
-          .update({
-            'full_name': _fullNameCtrl.text,
-            'ic_number': _icCtrl.text,
-            'phone': _phoneCtrl.text,
-            'email': _emailCtrl.text,
-            'dob': _dobCtrl.text,
-            'blood_type': _bloodTypeCtrl.text,
-          })
-          .eq('id', QueueData.currentUserId);
+      await _patients.update(QueueData.currentUserId, {
+        'full_name': _fullNameCtrl.text,
+        'ic_number': _icCtrl.text,
+        'phone': _phoneCtrl.text,
+        'email': _emailCtrl.text,
+        'dob': _dobCtrl.text,
+        'blood_type': _bloodTypeCtrl.text,
+      });
 
       // Update the current user's name in QueueData after saving
       QueueData.currentUserName = _fullNameCtrl.text;
